@@ -1,0 +1,91 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* EstampaLab brand: deep navy + orange on off-white */
+:root {
+  --radius: 0.625rem;
+  --background: #faf8f5;
+  --foreground: #1b2a4a;
+  --card: #ffffff;
+  --card-foreground: #1b2a4a;
+  --popover: #ffffff;
+  --popover-foreground: #1b2a4a;
+  --primary: #1b2a4a;
+  --primary-foreground: #ffffff;
+  --secondary: #eef1f6;
+  --secondary-foreground: #1b2a4a;
+  --muted: #f1efeb;
+  --muted-foreground: #5b6478;
+  --accent: #f28c28;
+  --accent-foreground: #1b2a4a;
+  --brand-orange: #f28c28;
+  --brand-orange-dark: #b85f0c; /* AA on white for text */
+  --destructive: #c0261d;
+  --destructive-foreground: #ffffff;
+  --success: #1f7a45;
+  --warning: #9a5b00;
+  --border: #e3e0da;
+  --input: #d6d2cb;
+  --ring: #f28c28;
+  --sidebar: #1b2a4a;
+  --sidebar-foreground: #e6eaf2;
+  --sidebar-muted: #9aa6bf;
+  --sidebar-accent: #26385f;
+  --chart-1: #1b2a4a;
+  --chart-2: #f28c28;
+  --chart-3: #4a7bb7;
+  --chart-4: #8fb3d9;
+  --chart-5: #f6b878;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-brand-orange: var(--brand-orange);
+  --color-brand-orange-dark: var(--brand-orange-dark);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "tnum" 1;
+  }
+}

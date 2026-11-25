@@ -1,0 +1,373 @@
+// EstampaLab Admin – Prisma schema (PostgreSQL / Supabase)
+//
+// Conventions
+// - Money: Int in euro cents. Every money field says Net or Gross in its name.
+// - VAT rates: Int in basis points (2300 = 23,00 %).
+// - Soft delete: `deletedAt` on Supplier, Product, Transaction.
+// - Future modules (quotes, orders, stock, artwork, time tracking, audit log)
+//   are added later as new tables + nullable FKs. Nothing below has to change shape.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // Supabase: pooled connection (port 6543, ?pgbouncer=true)
+  directUrl = env("DIRECT_URL") // Supabase: direct/session connection (port 5432), used by migrations
+}
+
+// ─────────────────────────────── Auth & settings ───────────────────────────────
+
+enum UserRole {
+  OWNER
+  STAFF
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         UserRole @default(OWNER)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  transactionsCreated Transaction[] @relation("TransactionCreatedBy")
+}
+
+/// Single-row-per-key settings: default VAT, low-margin threshold, hourly labour rate…
+model Setting {
+  key       String   @id // e.g. "defaultVatRateBp", "marginWarningBp", "labourHourlyRateCents"
+  value     String   @db.Text // JSON-encoded
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────── Suppliers ───────────────────────────────
+
+model SupplierCategory {
+  id        String     @id @default(cuid())
+  name      String     @unique // Peças lisas, Tintas e consumíveis, Transfers/vinil, Embalagem…
+  sortOrder Int        @default(0)
+  suppliers Supplier[]
+}
+
+model Supplier {
+  id               String    @id @default(cuid())
+  name             String
+  categoryId       String
+  vatNumber        String? // NIF
+  contactName      String?
+  email            String?
+  phone            String?
+  addressLine      String?
+  postalCode       String?
+  city             String?
+  country          String    @default("PT")
+  website          String?
+  paymentTermsDays Int? // e.g. 30 = 30 dias
+  leadTimeDays     Int?
+  minOrderNetCents Int?
+  notes            String?   @db.Text
+  rating           Int? // 1–5, validated in Zod
+  active           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  category     SupplierCategory   @relation(fields: [categoryId], references: [id])
+  products     Product[]
+  costItems    ProductCostItem[]
+  prices       SupplierPrice[]
+  transactions Transaction[]
+  recurring    RecurringExpense[]
+
+  @@index([categoryId])
+  @@index([deletedAt])
+}
+
+/// Price history per supplied item (blank t-shirt, DTF film, mug blank…).
+model SupplierPrice {
+  id               String   @id @default(cuid())
+  supplierId       String
+  itemName         String
+  productId        String? // optional link to a catalogue product
+  variantId        String?
+  unitCostNetCents Int
+  validFrom        DateTime @db.Date
+  notes            String?
+  createdAt        DateTime @default(now())
+
+  supplier Supplier        @relation(fields: [supplierId], references: [id])
+  product  Product?        @relation(fields: [productId], references: [id])
+  variant  ProductVariant? @relation(fields: [variantId], references: [id])
+
+  @@index([supplierId, itemName, validFrom])
+}
+
+// ─────────────────────────────── Products & costing ───────────────────────────────
+
+model ProductCategory {
+  id        String    @id @default(cuid())
+  name      String    @unique // T-shirts, Sweats, Fardas, Bonés, Canecas, Sacos, Crachás…
+  sortOrder Int       @default(0)
+  products  Product[]
+}
+
+model Product {
+  id                    String    @id @default(cuid())
+  name                  String
+  sku                   String    @unique
+  categoryId            String
+  supplierId            String? // main supplier of the blank
+  description           String?   @db.Text
+  baseSalePriceNetCents Int // price for qty 1 (or tier 1), ex-VAT
+  vatRateBp             Int       @default(2300)
+  marginWarningBp       Int? // overrides global threshold when set
+  active                Boolean   @default(true)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  category       ProductCategory    @relation(fields: [categoryId], references: [id])
+  supplier       Supplier?          @relation(fields: [supplierId], references: [id])
+  variants       ProductVariant[]
+  costItems      ProductCostItem[]
+  priceTiers     ProductPriceTier[]
+  fixedCosts     ProductFixedCost[]
+  supplierPrices SupplierPrice[]
+  transactions   Transaction[]
+
+  @@index([categoryId])
+  @@index([supplierId])
+  @@index([deletedAt])
+}
+
+model ProductVariant {
+  id                String  @id @default(cuid())
+  productId         String
+  sku               String  @unique
+  size              String?
+  colour            String?
+  salePriceNetCents Int? // null = use product base price
+  extraCostNetCents Int     @default(0) // e.g. XXL blank costs more
+  active            Boolean @default(true)
+
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplierPrices SupplierPrice[]
+
+  @@index([productId])
+}
+
+enum CostItemType {
+  BLANK // peça lisa
+  PRINT // personalização
+  CONSUMABLES // tinta / consumíveis
+  PACKAGING
+  LABOUR // minutes × hourly rate
+  SHIPPING_IN // share of inbound shipping
+  OTHER
+}
+
+enum PrintTechnique {
+  DTF
+  VINYL
+  SUBLIMATION
+  EMBROIDERY
+  SCREEN_PRINT
+  UV
+  LASER
+  OTHER
+}
+
+/// Per-unit cost line. Unit cost = sum of lines (+ variant extra cost).
+model ProductCostItem {
+  id               String          @id @default(cuid())
+  productId        String
+  type             CostItemType
+  label            String
+  technique        PrintTechnique? // only for PRINT
+  supplierId       String?
+  unitCostNetCents Int? // for non-labour lines
+  labourMinutes    Int? // for LABOUR lines
+  hourlyRateCents  Int? // for LABOUR; null = global setting
+  sortOrder        Int             @default(0)
+
+  product  Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier? @relation(fields: [supplierId], references: [id])
+
+  @@index([productId])
+}
+
+/// Per-job/setup costs (screens, digitising embroidery, film) used for break-even qty.
+model ProductFixedCost {
+  id             String @id @default(cuid())
+  productId      String
+  label          String
+  amountNetCents Int
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+}
+
+model ProductPriceTier {
+  id                String @id @default(cuid())
+  productId         String
+  minQty            Int
+  maxQty            Int? // null = and above
+  unitPriceNetCents Int
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, minQty])
+}
+
+// ─────────────────────────────── Customers (minimal now, expanded later) ───────────────────────────────
+
+model Customer {
+  id        String    @id @default(cuid())
+  name      String // company name
+  vatNumber String?
+  email     String?
+  phone     String?
+  notes     String?   @db.Text
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  transactions Transaction[]
+  // later: contacts, quotes, orders
+}
+
+// ─────────────────────────────── Ledger ───────────────────────────────
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  MB_WAY
+  MULTIBANCO
+  CARD
+  CASH
+  PAYPAL
+  OTHER
+}
+
+enum PaymentStatus {
+  PAID
+  PENDING
+}
+
+model TransactionCategory {
+  id        String          @id @default(cuid())
+  name      String
+  type      TransactionType
+  parentId  String?
+  isDefault Boolean         @default(false)
+  sortOrder Int             @default(0)
+
+  parent       TransactionCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children     TransactionCategory[] @relation("CategoryTree")
+  transactions Transaction[]
+  recurring    RecurringExpense[]
+
+  @@unique([type, parentId, name])
+}
+
+model Transaction {
+  id            String          @id @default(cuid())
+  type          TransactionType
+  date          DateTime        @db.Date
+  dueDate       DateTime?       @db.Date
+  status        PaymentStatus   @default(PAID)
+  paidAt        DateTime?       @db.Date
+  netCents      Int
+  vatRateBp     Int
+  vatCents      Int // stored, not recomputed, so rounding matches the invoice
+  grossCents    Int // = net + vat
+  description   String
+  categoryId    String
+  paymentMethod PaymentMethod?
+  supplierId    String?
+  customerId    String?
+  productId     String?
+  // later: orderId String?  (nullable FK added with the Orders module)
+  invoiceRef    String? // supplier/customer invoice number
+  notes         String?         @db.Text
+  recurringId   String?
+  createdById   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  deletedAt     DateTime?
+
+  category    TransactionCategory @relation(fields: [categoryId], references: [id])
+  supplier    Supplier?           @relation(fields: [supplierId], references: [id])
+  customer    Customer?           @relation(fields: [customerId], references: [id])
+  product     Product?            @relation(fields: [productId], references: [id])
+  recurring   RecurringExpense?   @relation(fields: [recurringId], references: [id])
+  createdBy   User?               @relation("TransactionCreatedBy", fields: [createdById], references: [id])
+  attachments Attachment[]
+
+  @@unique([recurringId, date]) // a recurring rule generates at most one entry per date
+  @@index([date])
+  @@index([type, date])
+  @@index([categoryId])
+  @@index([supplierId])
+  @@index([deletedAt])
+}
+
+enum RecurrenceFrequency {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+/// Template that generates Transaction rows (rent, Adobe, Shopify…).
+model RecurringExpense {
+  id            String              @id @default(cuid())
+  description   String
+  netCents      Int
+  vatRateBp     Int                 @default(2300)
+  categoryId    String
+  supplierId    String?
+  paymentMethod PaymentMethod?
+  frequency     RecurrenceFrequency @default(MONTHLY)
+  interval      Int                 @default(1)
+  startDate     DateTime            @db.Date
+  endDate       DateTime?           @db.Date
+  nextRunDate   DateTime            @db.Date
+  active        Boolean             @default(true)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  category     TransactionCategory @relation(fields: [categoryId], references: [id])
+  supplier     Supplier?           @relation(fields: [supplierId], references: [id])
+  transactions Transaction[]
+
+  @@index([active, nextRunDate])
+}
+
+// ─────────────────────────────── Files ───────────────────────────────
+
+/// Generic file record behind the storage abstraction (local disk now, S3/R2 later).
+/// Nullable owner FKs so artwork/mockups/quotes can reuse it later.
+model Attachment {
+  id            String   @id @default(cuid())
+  storageKey    String   @unique // path/key inside the storage driver
+  originalName  String
+  mimeType      String
+  sizeBytes     Int
+  transactionId String?
+  // later: orderId, quoteId, artworkId …
+  createdAt     DateTime @default(now())
+
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId])
+}
